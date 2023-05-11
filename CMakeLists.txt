@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.5)
 # Construct the project name PROJNAME from the directory name
 get_filename_component(PROJNAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 set(PROJNAME "vk_mini_path_tracer_${PROJNAME}")
+set(CMAKE_BUILD_TYPE "Debug")
 project(${PROJNAME})
 
 #####################################################################################
