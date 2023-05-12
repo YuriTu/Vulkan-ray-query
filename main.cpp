@@ -1,7 +1,9 @@
 
 #include <nvvk/context_vk.hpp>
-#include <nvvk/structs_vk.hpp> // 处理各类结构体
+#include <nvvk/error_vk.hpp>
 #include <nvvk/resourceallocator_vk.hpp>
+#include <nvvk/structs_vk.hpp> // 处理各类结构体
+
 
 static const uint64_t render_width = 800;
 static const uint64_t render_height = 600;
@@ -49,15 +51,38 @@ int main(int argc, const char** argv)
 
 
     // 从GPU传回CPU
-    // todo 1. 所以buffer是开在gpu上的？ map是把storge 映射到cpu raw上？
-    void* data = allocator.map(buffer);
-    float* fltData = reinterpret_cast<float*>(data);
-    printf("First three elements: %f, %f, %f\n", fltData[0], fltData[1], fltData[2]);
-    allocator.unmap(buffer);
+    // todo 1. 所以buffer是开在gpu上的？ 取决于是不是独显，核显是在一起的，独显在cpu上 
+    // map是把storge 映射到cpu raw上？no，gpu 的vram需要有flags VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    // void* data = allocator.map(buffer);
+    // float* fltData = reinterpret_cast<float*>(data);
+    // printf("First three elements: %f, %f, %f\n", fltData[0], fltData[1], fltData[2]);
+    // allocator.unmap(buffer);
+
+    // prepare fill memory
+    VkCommandPoolCreateInfo cmdPoolInfo = nvvk::make<VkCommandPoolCreateInfo>();
+    cmdPoolInfo.queueFamilyIndex = context.m_queueGCT;
+
+    VkCommandPool cmdPool;
+    NVVK_CHECK(vkCreateCommandPool(context, &cmdPoolInfo, nullptr, &cmdPool));
+
+    VkCommandBufferAllocateInfo cmdAllocInfo = nvvk::make<VkCommandBufferAllocateInfo>();
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandPool = cmdPool;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmdBuffer;
+    NVVK_CHECK(vkAllocateCommandBuffers(context, &cmdAllocInfo, &cmdBuffer));
+    
+    // start exec 
+    VkCommandBufferBeginInfo beiginInfo = nvvk::make<VkCommandBufferBeginInfo>();
+    beiginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    NVVK_CHECK(vkBeginCommandBuffer(cmdBuffer, &beiginInfo));
+
+    
+
+    
+
 
     allocator.destroy(buffer);
     allocator.deinit();
     context.deinit();
-
-    
 } 
