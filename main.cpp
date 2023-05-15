@@ -50,14 +50,6 @@ int main(int argc, const char** argv)
     );
 
 
-    // 从GPU传回CPU
-    // todo 1. 所以buffer是开在gpu上的？ 取决于是不是独显，核显是在一起的，独显在cpu上 
-    // map是把storge 映射到cpu raw上？no，gpu 的vram需要有flags VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-    // void* data = allocator.map(buffer);
-    // float* fltData = reinterpret_cast<float*>(data);
-    // printf("First three elements: %f, %f, %f\n", fltData[0], fltData[1], fltData[2]);
-    // allocator.unmap(buffer);
-
     // prepare fill memory
     VkCommandPoolCreateInfo cmdPoolInfo = nvvk::make<VkCommandPoolCreateInfo>();
     cmdPoolInfo.queueFamilyIndex = context.m_queueGCT;
@@ -77,10 +69,52 @@ int main(int argc, const char** argv)
     beiginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     NVVK_CHECK(vkBeginCommandBuffer(cmdBuffer, &beiginInfo));
 
+    // 填充buffer 一般用于clear或者初始化
+    const float fillValue = 0.5f;
+    const uint32_t& fillValueU32 = reinterpret_cast<const uint32_t&>(fillValue);
+    vkCmdFillBuffer(cmdBuffer, buffer.buffer, 0, bufferSizeByte, fillValueU32);
     
+    // 等fill 操作完成后，gpu再读取，这里需要注意cmd的同步问题与barrier的功能
+
+    VkMemoryBarrier memoryBarrier = nvvk::make<VkMemoryBarrier>();
+    // 保护从 transter 开始写入到
+    memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // HOST READ 即cpu 可以读
+    memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmdBuffer, 
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0,
+        1, &memoryBarrier,
+        0, nullptr, 0, nullptr
+        );
+    // 这里cmd的命令
+    // 1. fill buffer
+    // 2. pipeline barrier
+
+    NVVK_CHECK(vkEndCommandBuffer(cmdBuffer));
+
+    // 命令处理完了，准备queue submit
+    VkSubmitInfo submitInfo = nvvk::make<VkSubmitInfo>();
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+    NVVK_CHECK(vkQueueSubmit(context.m_queueGCT, 1, &submitInfo, VK_NULL_HANDLE));
+    // await 
+    NVVK_CHECK(vkQueueWaitIdle(context.m_queueGCT));
 
     
+    // 从GPU传回CPU
+    // todo 1. 所以buffer是开在gpu上的？ 取决于是不是独显，核显是在一起的，独显在cpu上 
+    // map是把storge 映射到cpu raw上？可以这么理解，严格的说gpu 的vram需要有flags VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT 但我们有host的一致性，所以可以理解为gpu
+    void* data = allocator.map(buffer);
+    float* fltData = reinterpret_cast<float*>(data);
+    printf("First three elements: %f, %f, %f\n", fltData[0], fltData[1], fltData[2]);
+    allocator.unmap(buffer);
 
+    vkFreeCommandBuffers(context, cmdPool, 1, &cmdBuffer);
+    vkDestroyCommandPool(context, cmdPool, nullptr);
 
     allocator.destroy(buffer);
     allocator.deinit();
