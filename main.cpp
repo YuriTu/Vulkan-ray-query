@@ -1,9 +1,11 @@
 
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
 #include <nvh/fileoperations.hpp>
 #include <nvvk/context_vk.hpp>
+#include <nvvk/descriptorsets_vk.hpp>
 #include <nvvk/error_vk.hpp>
 #include <nvvk/resourceallocator_vk.hpp>
 #include <nvvk/structs_vk.hpp> // 处理各类结构体
@@ -31,19 +33,19 @@ int main(int argc, const char** argv)
     deviceInfo.addDeviceExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false, &rayQueryFeatures);
 
     // debug
-    deviceInfo.addDeviceExtension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
-    VkValidationFeaturesEXT validationInfo = nvvk::make<VkValidationFeaturesEXT>();
-    VkValidationFeatureEnableEXT validationFeatureToEnable = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
-    validationInfo.enabledValidationFeatureCount = 1;
-    validationInfo.pEnabledValidationFeatures = &validationFeatureToEnable;
-    deviceInfo.instanceCreateInfoExt = &validationInfo;
+    // deviceInfo.addDeviceExtension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
+    // VkValidationFeaturesEXT validationInfo = nvvk::make<VkValidationFeaturesEXT>();
+    // VkValidationFeatureEnableEXT validationFeatureToEnable = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
+    // validationInfo.enabledValidationFeatureCount = 1;
+    // validationInfo.pEnabledValidationFeatures = &validationFeatureToEnable;
+    // deviceInfo.instanceCreateInfoExt = &validationInfo;
 
-    #ifdef _WIN32
-        _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
-    #else  // If not _WIN32
-        static char putenvString[] = "DEBUG_PRINTF_TO_STDOUT=1";
-        putenv(putenvString);
-    #endif  // _WIN32
+    // #ifdef _WIN32
+    //     _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
+    // #else  // If not _WIN32
+    //     static char putenvString[] = "DEBUG_PRINTF_TO_STDOUT=1";
+    //     putenv(putenvString);
+    // #endif  // _WIN32
 
 
     nvvk::Context context;
@@ -63,6 +65,7 @@ int main(int argc, const char** argv)
     bufferCreateInfo.size = bufferSizeByte;
     // 用途 storage transfer
     bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    
     // 这里不用VkImage的原因单纯是为了简单
     nvvk::Buffer buffer = allocator.createBuffer(
         bufferCreateInfo,
@@ -85,6 +88,21 @@ int main(int argc, const char** argv)
     VkCommandPool cmdPool;
     NVVK_CHECK(vkCreateCommandPool(context, &cmdPoolInfo, nullptr, &cmdPool));
 
+    // 在descriptor set 中 写入一个descriptor 位于bind0 set 0
+    // 提供 descriptor 与shader 的access的能力
+    nvvk::DescriptorSetContainer descriptorSetContainer(context);
+    descriptorSetContainer.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    descriptorSetContainer.initLayout();
+    descriptorSetContainer.initPool(1);
+    descriptorSetContainer.initPipeLayout();// 依赖 pool 和layout
+
+    VkDescriptorBufferInfo descriptorBufferInfo{};
+    descriptorBufferInfo.buffer = buffer.buffer;
+    descriptorBufferInfo.range = bufferSizeByte;
+
+    VkWriteDescriptorSet writeDescriptor = descriptorSetContainer.makeWrite(0,0,&descriptorBufferInfo);
+    vkUpdateDescriptorSets(context, 1, &writeDescriptor, 0,nullptr);
+
     // 读取shader 创建pipeline
     VkShaderModule rayTraceModule = 
         nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.comp.glsl.spv", true, searchPaths));
@@ -97,25 +115,15 @@ int main(int argc, const char** argv)
     // shader entrypoint
     shaderStageCreateInfo.pName = "main";
 
-    // 空的pipeline layout 乜有什么附加资源
-      // For the moment, create an empty pipeline layout. You can ignore this code
-  // for now; we'll replace it in the next chapter.
-  VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = nvvk::make<VkPipelineLayoutCreateInfo>();
-  pipelineLayoutCreateInfo.setLayoutCount             = 0;
-  pipelineLayoutCreateInfo.pushConstantRangeCount     = 0;
-  VkPipelineLayout pipelineLayout;
-  NVVK_CHECK(vkCreatePipelineLayout(context, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
-
     // 创建一个pipeline
     VkComputePipelineCreateInfo pipelineCreateInfo = nvvk::make<VkComputePipelineCreateInfo>();
     pipelineCreateInfo.stage = shaderStageCreateInfo;
-    pipelineCreateInfo.layout = pipelineLayout;
+    pipelineCreateInfo.layout = descriptorSetContainer.getPipeLayout();
     VkPipeline computePipeline;
     NVVK_CHECK(vkCreateComputePipelines(
         context, VK_NULL_HANDLE,1, &pipelineCreateInfo,
         nullptr, &computePipeline
     ));
-
     
 
     VkCommandBufferAllocateInfo cmdAllocInfo = nvvk::make<VkCommandBufferAllocateInfo>();
@@ -137,9 +145,18 @@ int main(int argc, const char** argv)
     
     // 等fill 操作完成后，gpu再读取，这里需要注意cmd的同步问题与barrier的功能
 
-
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdDispatch(cmdBuffer,1 ,1 ,1);
+    // bind descriptor set
+    VkDescriptorSet descriptorSet = descriptorSetContainer.getSet(0);
+    vkCmdBindDescriptorSets(
+        cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(),
+        0,1,&descriptorSet, 0, nullptr
+    );
+
+    vkCmdDispatch(cmdBuffer,
+    (uint32_t(render_width) + workgroup_width - 1) / workgroup_width, // ceil(width / work_with) 则可得每个work item 的x
+    (uint32_t(render_height) + workgroup_height - 1 ) / workgroup_height ,
+    1);
 
 
     VkMemoryBarrier memoryBarrier = nvvk::make<VkMemoryBarrier>();
@@ -181,7 +198,8 @@ int main(int argc, const char** argv)
 
     vkDestroyPipeline(context, computePipeline, nullptr);
     vkDestroyShaderModule(context, rayTraceModule, nullptr);
-    vkDestroyPipelineLayout(context, pipelineLayout, nullptr);
+    // vkDestroyPipelineLayout(context, pipelineLayout, nullptr);
+    descriptorSetContainer.deinit();
 
     vkFreeCommandBuffers(context, cmdPool, 1, &cmdBuffer);
     vkDestroyCommandPool(context, cmdPool, nullptr);
