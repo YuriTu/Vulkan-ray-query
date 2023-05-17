@@ -206,20 +206,58 @@ int main(int argc, const char** argv)
     raytracingBuilder.setup(context, &allocator, context.m_queueGCT);
     raytracingBuilder.buildBlas(blases, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
 
+    // 构建tlas 目前只有一个
+    std::vector<VkAccelerationStructureInstanceKHR> instances;
+    {
+        VkAccelerationStructureInstanceKHR instance{};
+        // instance pointer的对应blas
+        instance.accelerationStructureReference = raytracingBuilder.getBlasDeviceAddress(0);
+        // 不做transform 所以为1
+        instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = instance.transform.matrix[2][2] = 1.0f;
+        // 查询intersection的部分
+        instance.instanceCustomIndex = 0;
+        instance.instanceShaderBindingTableRecordOffset = 0;
+        
+        // 不考虑facing cull
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.mask  = 0xFF;
+        instances.push_back(instance);
+    }
+    raytracingBuilder.buildTlas(instances, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+
+    // 把tlas 添加到descriptor set 让shader可以访问
+    // 根据binding的分配 0 storage buffer 1 acceleration 
     // 在descriptor set 中 写入一个descriptor 位于bind0 set 0
     // 提供 descriptor 与shader 的access的能力
     nvvk::DescriptorSetContainer descriptorSetContainer(context);
     descriptorSetContainer.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    descriptorSetContainer.addBinding(1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     descriptorSetContainer.initLayout();
     descriptorSetContainer.initPool(1);
     descriptorSetContainer.initPipeLayout();// 依赖 pool 和layout
 
-    VkDescriptorBufferInfo descriptorBufferInfo{};
-    descriptorBufferInfo.buffer = buffer.buffer;
-    descriptorBufferInfo.range = bufferSizeByte;
+    // 现在两个descriptor set了，所以对应两个buffer
+    {
+        std::array<VkWriteDescriptorSet, 2> writeDescriptorSets;
+        //0
+        VkDescriptorBufferInfo descriptorBufferInfo{};
+        descriptorBufferInfo.buffer = buffer.buffer;
+        descriptorBufferInfo.range = bufferSizeByte;
+        writeDescriptorSets[0] = descriptorSetContainer.makeWrite(0,0,&descriptorBufferInfo);
+        // 1
+        VkWriteDescriptorSetAccelerationStructureKHR descriptorAS = nvvk::make<VkWriteDescriptorSetAccelerationStructureKHR>();
+        // 或者tlas的pointer
+        VkAccelerationStructureKHR tlasCopy = raytracingBuilder.getAccelerationStructure();
+        descriptorAS.accelerationStructureCount = 1;
+        descriptorAS.pAccelerationStructures    = &tlasCopy;
+        writeDescriptorSets[1]                  = descriptorSetContainer.makeWrite(0, 1, &descriptorAS);
+        vkUpdateDescriptorSets(context, 
+            static_cast<uint32_t>(writeDescriptorSets.size()), 
+            writeDescriptorSets.data(),
+            0,nullptr);
+    }
+    
 
-    VkWriteDescriptorSet writeDescriptor = descriptorSetContainer.makeWrite(0,0,&descriptorBufferInfo);
-    vkUpdateDescriptorSets(context, 1, &writeDescriptor, 0,nullptr);
 
     // 读取shader 创建pipeline
     VkShaderModule rayTraceModule = 
@@ -302,6 +340,9 @@ int main(int argc, const char** argv)
     vkDestroyShaderModule(context, rayTraceModule, nullptr);
     // vkDestroyPipelineLayout(context, pipelineLayout, nullptr);
     descriptorSetContainer.deinit();
+    raytracingBuilder.destroy();
+    allocator.destroy(vertexBuffer);
+    allocator.destroy(indexBuffer);
 
     vkDestroyCommandPool(context, cmdPool, nullptr);
 
