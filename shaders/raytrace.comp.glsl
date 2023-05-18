@@ -53,15 +53,33 @@ void main()
         10000.0
     );
     // 获得所有intersect(在透明情况下)之后返回false
+    float numInter = 0.0;
     while(rayQueryProceedEXT(rayQuery))
     {
-
+        numInter += 1.0;
     }
-    // 拿到t
-    const float t = rayQueryGetIntersectionTEXT(rayQuery, true);
+
+    vec3 pixelColor;
+    // 获得 intersec type
+    if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT) 
+    {
+        // 获得 intersec primitive 的id
+        // const int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+        // pixelColor = vec3(primitiveID / 10.0, primitiveID / 100.0, primitiveID / 1000.0);
+
+        // 坐标
+        pixelColor = vec3(0.0, rayQueryGetIntersectionBarycentricsEXT(rayQuery,true));
+        pixelColor.x = 1.0 - pixelColor.y - pixelColor.z;
+    }
+    else
+    {
+        pixelColor = vec3(0.0, 0.0, 0.5);
+    }
+    // t的获得
+    // const float t = rayQueryGetIntersectionTEXT(rayQuery, true);
     // 制作depth buffer 划分为10级
-    vec3 deepthValue = vec3(t / 10.0);
+    // vec3 deepthValue = vec3(t / 10.0);
 
     uint linearIndex = resolution.x * pixel.y + pixel.x;
-    imageData[linearIndex] = vec3(t / 10);
+    imageData[linearIndex] = pixelColor;
 }
