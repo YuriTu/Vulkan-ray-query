@@ -20,7 +20,14 @@ layout(binding = 3, set = 0, scalar) buffer Indices
 {
     uint indices[];
 };
-
+// PRNG = Pseudo-Random Number Generator
+float stepAndOutputRNGFloat(inout uint rngState)
+{
+    rngState  = rngState * 747796405 + 1;
+    uint word = ((rngState >> ((rngState >> 28) + 4)) ^ rngState) * 277803737;
+    word      = (word >> 22) ^ word;
+    return float(word) / 4294967295.0f;
+}
 
 vec3 skyColor(vec3 direction)
 {
@@ -85,62 +92,92 @@ void main()
         return;
     }
 
+    // random seed
+    uint rngState = resolution.x * pixel.y + pixel.x;
+
     const vec3 cameraOrigin = vec3(-0.001, 1.0, 6.0);
-    vec3 rayOrigin = cameraOrigin;
-
-    const vec2 screenUV = vec2(
-        // uy / resolution.x  * aspect = uv / res.y
-        (2.0 * (float(pixel.x) + 0.5) - resolution.x) / resolution.y,
-        -(2.0 * (float(pixel.y) + 0.5) - resolution.y) / resolution.y
-    );
-
+    
     const float fov = 1.0 / 5.0;
-    // z指向外部 右手系
-    vec3 rayDirection = vec3(fov * screenUV, -1.0);
-    rayDirection = normalize(rayDirection);
 
-    vec3 radiance = vec3(1.0);
-    vec3 pixelColor = vec3(0.0);
+    vec3 summedPixelColor = vec3(0.0);
 
-    // 控制32 128 范围
-    for (int tracedSegments = 0; tracedSegments < 32; tracedSegments++) {
-        rayQueryEXT rayQuery;
-        rayQueryInitializeEXT(rayQuery,
-            tlas,
-            gl_RayFlagsOpaqueEXT,
-            0xFF,// mask 类似LOD的处理
-            rayOrigin,
-            0.0,
-            rayDirection,
-            10000.0
+    const int NUM_SAMPLES = 64;
+
+    for (int sampleIdx = 0; sampleIdx < NUM_SAMPLES; sampleIdx++)
+    {
+        vec3 rayOrigin = cameraOrigin;
+
+        const vec2 randomPixelCenter = vec2(pixel) + vec2(stepAndOutputRNGFloat(rngState), stepAndOutputRNGFloat(rngState));
+        // 对于pixel加一个扰动
+        const vec2 screenUV = vec2(
+        // uy / resolution.x  * aspect = uv / res.y
+        (2.0 * (float(randomPixelCenter.x) + 0.5) - resolution.x) / resolution.y,
+        -(2.0 * (float(randomPixelCenter.y) + 0.5) - resolution.y) / resolution.y
         );
-        while(rayQueryProceedEXT(rayQuery))
+            
+        // z指向外部 右手系
+        vec3 rayDirection = vec3(fov * screenUV, -1.0);
+        rayDirection = normalize(rayDirection);
+
+        vec3 radiance = vec3(1.0);
+        vec3 pixelColor = vec3(0.0);
+
+        
+    // 控制32 128 范围
+        for (int tracedSegments = 0; tracedSegments < 32; tracedSegments++) 
         {
-        }
-        // 获得 intersec type
-        if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT) 
-        {
-            HitInfo hitInfo = getObjectHitInfo(rayQuery);
+            rayQueryEXT rayQuery;
+            rayQueryInitializeEXT(rayQuery,
+                tlas,
+                gl_RayFlagsOpaqueEXT,
+                0xFF,// mask 类似LOD的处理
+                rayOrigin,
+                0.0,
+                rayDirection,
+                10000.0
+            );
 
-            hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
+            while(rayQueryProceedEXT(rayQuery))
+            {
+            }
 
-            radiance *= hitInfo.color;
+            // 获得 intersec type
+            if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT) 
+            {
+                HitInfo hitInfo = getObjectHitInfo(rayQuery);
 
-            rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
+                hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
 
-            rayDirection = reflect(rayDirection, hitInfo.worldNormal);
-        }
-        else
-        {
-            pixelColor = radiance * skyColor(rayDirection);
+                radiance *= hitInfo.color;
+
+                rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
+
+                // rayDirection = reflect(rayDirection, hitInfo.worldNormal);
+
+                const float theta = 2.0 * 3.1415926 * stepAndOutputRNGFloat(rngState);
+                // 取一个随机-1，1 的数
+                const float u = 2.0 * stepAndOutputRNGFloat(rngState) - 1.0;
+                // x^2 + y^2 +z^1 = 1 这里开始求x^2 + y^2 = 1- z^2
+                const float r = sqrt(1.0 - u * u);
+                rayDirection = hitInfo.worldNormal + vec3(r * cos(theta) ,r * sin(theta), u);
+                rayDirection = normalize(rayDirection);
+            }
+            else
+            {
+                radiance *= skyColor(rayDirection);
+                summedPixelColor += radiance;
+                break;
+            }
         }
     }
-    
+
     // t的获得
     // const float t = rayQueryGetIntersectionTEXT(rayQuery, true);
     // 制作depth buffer 划分为10级
     // vec3 deepthValue = vec3(t / 10.0);
 
     uint linearIndex = resolution.x * pixel.y + pixel.x;
-    imageData[linearIndex] = pixelColor;
+
+    // pixelColor = vec3( stepAndOutputRNGFloat(rngState) );
+    imageData[linearIndex] = summedPixelColor / float(NUM_SAMPLES);
 }
