@@ -75,7 +75,18 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
     result.worldNormal = objectNormal;
 
     // 目前默认一个albedo
-    result.color = vec3(0.7f);
+    result.color = vec3(0.8f);
+
+    const float dotX = dot(result.worldNormal, vec3(1.0, 0.0, 0.0));
+    if(dotX > 0.99)
+    {
+        result.color = vec3(0.8, 0.0, 0.0);
+    }
+    else if (dotX < -0.99)
+    {
+        result.color = vec3(0.0, 0.8, 0.0);
+    }
+
     return result;
 }
 
